@@ -15,7 +15,6 @@ def run_sql(query, params=None):
         host="ep-polished-meadow-adynfmd5-pooler.c-2.us-east-1.aws.neon.tech",
         port="5432",
         sslmode="require",
-        options='-c channel_binding=require'
     )
     df = pd.read_sql_query(query, conn, params=params)
     conn.close()
