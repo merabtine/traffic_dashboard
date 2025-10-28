@@ -331,11 +331,3 @@ df7 = run_sql(query7, (f"{hours} hours",))
 fig7 = px.line(df7, x="hour_slot", y="avg_speed", color="road_type",
                title="Average Speed Comparison by Road Type")
 st.plotly_chart(fig7, use_container_width=True)
-
-
-# ======================================================
-# ⚠️ Congestion Alerts
-# ======================================================
-st.header("⚠️ Congestion Alerts")
-if filtered_df["avg_speed"].min() < 20:
-    st.warning("🚨 Possible congestion or slowdown detected in one or more zones!")
