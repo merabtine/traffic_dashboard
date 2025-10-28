@@ -27,7 +27,6 @@ def run_sql(query, params=None):
 st.set_page_config(page_title="🚦 Real-Time Traffic Dashboard", layout="wide")
 st.title("🚦 Real-Time Traffic Analytics Dashboard")
 
-# --- Choix de la période ---
 hours = st.slider("Durée d'analyse (heures)", 1, 24, 6)
 
 # ======================================================
@@ -48,7 +47,6 @@ ORDER BY minute DESC;
 """
 base_df = run_sql(query_base, (f"{hours} hours",))
 
-# --- Filtres latéraux ---
 st.sidebar.header("🔍 Filtres")
 locations = st.sidebar.multiselect("Sélectionner les emplacements", base_df["location_name"].unique(), default=base_df["location_name"].unique())
 road_types = st.sidebar.multiselect("Sélectionner le type de route", base_df["road_type"].unique(), default=base_df["road_type"].unique())
@@ -58,13 +56,11 @@ filtered_df = base_df[
     (base_df["road_type"].isin(road_types))
 ]
 
-# ======================================================
-# 🧮 KPIs (statistiques principales)
-# ======================================================
 col1, col2, col3 = st.columns(3)
 col1.metric("🚗 Total Vehicles", int(filtered_df["vehicle_count"].sum()))
 col2.metric("⚡ Average Speed (km/h)", round(filtered_df["avg_speed"].mean(), 2))
 col3.metric("📍 Locations Active", len(filtered_df["location_name"].unique()))
+
 
 # ======================================================
 # 1️⃣ Traffic Peaks and Flow Intensity
@@ -96,6 +92,7 @@ df1 = run_sql(query1, (f"{hours} hours",))
 fig1 = px.bar(df1, x="hour_slot", y="vehicle_count", color="traffic_status",
               barmode="group", title="Traffic Peaks and Flow Intensity")
 st.plotly_chart(fig1, use_container_width=True)
+
 
 # ======================================================
 # 2️⃣ Movement Efficiency & Slowdowns
@@ -140,6 +137,7 @@ df2 = run_sql(query2, (f"{hours} hours",))
 fig2 = px.histogram(df2, x="traffic_status", color="traffic_status",
                     title="Traffic Efficiency Status Distribution")
 st.plotly_chart(fig2, use_container_width=True)
+
 
 # ======================================================
 # 3️⃣ Dynamic Traffic Evaluation
@@ -186,6 +184,7 @@ fig3 = px.bar(df3, x="location_name", y="avg_speed", color="traffic_condition",
               title="Traffic Conditions by Road Type")
 st.plotly_chart(fig3, use_container_width=True)
 
+
 # ======================================================
 # 4️⃣ Density Impact on Flow
 # ======================================================
@@ -226,6 +225,7 @@ fig4 = px.scatter(df4, x="vehicle_count", y="avg_speed", color="density_impact",
                   title="Density Impact on Traffic Flow")
 st.plotly_chart(fig4, use_container_width=True)
 
+
 # ======================================================
 # 5️⃣ Daily Evolution
 # ======================================================
@@ -264,11 +264,78 @@ fig5 = px.line(df5, x="hour_slot", y="avg_speed", color="traffic_trend",
                title="Traffic Evolution Throughout the Day")
 st.plotly_chart(fig5, use_container_width=True)
 
+
+# ======================================================
+# 6️⃣ Incident Detection
+# ======================================================
+st.header("6️⃣ Incident Detection")
+
+query6 = """
+WITH speed_stats AS (
+    SELECT 
+        sensor_id,
+        date_trunc('minute', record_time) AS time_slot,
+        AVG(speed) AS avg_speed
+    FROM raw_traffic_readings
+    WHERE record_time >= NOW() - INTERVAL %s
+    GROUP BY sensor_id, date_trunc('minute', record_time)
+),
+sensor_baseline AS (
+    SELECT 
+        sensor_id,
+        AVG(avg_speed) AS normal_speed,
+        STDDEV(avg_speed) AS speed_std
+    FROM speed_stats
+    GROUP BY sensor_id
+)
+SELECT 
+    s.sensor_id,
+    se.location_name,
+    s.time_slot,
+    ROUND(s.avg_speed, 2) AS avg_speed,
+    ROUND(b.normal_speed, 2) AS normal_speed,
+    CASE 
+        WHEN s.avg_speed < b.normal_speed - 2 * b.speed_std THEN 'Possible Incident - Sudden slowdown'
+        WHEN s.avg_speed > b.normal_speed + 2 * b.speed_std THEN 'Unusual acceleration'
+        ELSE 'Normal'
+    END AS anomaly_flag
+FROM speed_stats s
+JOIN sensor_baseline b USING(sensor_id)
+JOIN sensors se USING(sensor_id)
+ORDER BY s.sensor_id, s.time_slot;
+"""
+df6 = run_sql(query6, (f"{hours} hours",))
+fig6 = px.bar(df6, x="time_slot", y="avg_speed", color="anomaly_flag",
+              title="Incident and Anomaly Detection")
+st.plotly_chart(fig6, use_container_width=True)
+
+
+# ======================================================
+# 7️⃣ Compare Average Speed Across Road Types
+# ======================================================
+st.header("7️⃣ Compare Average Speed Across Road Types")
+
+query7 = """
+SELECT 
+    s.road_type,
+    date_trunc('hour', r.record_time) AS hour_slot,
+    ROUND(AVG(speed), 2) AS avg_speed,
+    COUNT(vehiicule_id) AS vehicle_count
+FROM raw_traffic_readings r
+JOIN sensors s ON r.sensor_id = s.sensor_id
+WHERE record_time >= NOW() - INTERVAL %s
+GROUP BY s.road_type, date_trunc('hour', r.record_time)
+ORDER BY s.road_type, hour_slot;
+"""
+df7 = run_sql(query7, (f"{hours} hours",))
+fig7 = px.line(df7, x="hour_slot", y="avg_speed", color="road_type",
+               title="Average Speed Comparison by Road Type")
+st.plotly_chart(fig7, use_container_width=True)
+
+
 # ======================================================
 # ⚠️ Congestion Alerts
 # ======================================================
 st.header("⚠️ Congestion Alerts")
 if filtered_df["avg_speed"].min() < 20:
     st.warning("🚨 Possible congestion or slowdown detected in one or more zones!")
-
-
