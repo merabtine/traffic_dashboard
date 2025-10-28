@@ -26,10 +26,45 @@ def run_sql(query, params=None):
 # ==============================
 st.set_page_config(page_title="🚦 Real-Time Traffic Dashboard", layout="wide")
 st.title("🚦 Real-Time Traffic Analytics Dashboard")
-st.caption("Data extracted from 2SD04_WS01.sql (Neon Database)")
 
-# Choix de la période d’analyse
+# --- Choix de la période ---
 hours = st.slider("Durée d'analyse (heures)", 1, 24, 6)
+
+# ======================================================
+# 🔍 Données globales
+# ======================================================
+query_base = """
+SELECT
+  s.location_name,
+  s.road_type,
+  DATE_TRUNC('minute', r.record_time) AS minute,
+  COUNT(*) AS vehicle_count,
+  AVG(r.speed) AS avg_speed
+FROM raw_traffic_readings r
+JOIN sensors s ON r.sensor_id = s.sensor_id
+WHERE record_time >= NOW() - INTERVAL %s
+GROUP BY s.location_name, s.road_type, DATE_TRUNC('minute', r.record_time)
+ORDER BY minute DESC;
+"""
+base_df = run_sql(query_base, (f"{hours} hours",))
+
+# --- Filtres latéraux ---
+st.sidebar.header("🔍 Filtres")
+locations = st.sidebar.multiselect("Sélectionner les emplacements", base_df["location_name"].unique(), default=base_df["location_name"].unique())
+road_types = st.sidebar.multiselect("Sélectionner le type de route", base_df["road_type"].unique(), default=base_df["road_type"].unique())
+
+filtered_df = base_df[
+    (base_df["location_name"].isin(locations)) &
+    (base_df["road_type"].isin(road_types))
+]
+
+# ======================================================
+# 🧮 KPIs (statistiques principales)
+# ======================================================
+col1, col2, col3 = st.columns(3)
+col1.metric("🚗 Total Vehicles", int(filtered_df["vehicle_count"].sum()))
+col2.metric("⚡ Average Speed (km/h)", round(filtered_df["avg_speed"].mean(), 2))
+col3.metric("📍 Locations Active", len(filtered_df["location_name"].unique()))
 
 # ======================================================
 # 1️⃣ Traffic Peaks and Flow Intensity
@@ -230,6 +265,10 @@ fig5 = px.line(df5, x="hour_slot", y="avg_speed", color="traffic_trend",
 st.plotly_chart(fig5, use_container_width=True)
 
 # ======================================================
-# ✅ Success
+# ⚠️ Congestion Alerts
 # ======================================================
-st.success("✅ Dashboard connected successfully to Neon Database!")
+st.header("⚠️ Congestion Alerts")
+if filtered_df["avg_speed"].min() < 20:
+    st.warning("🚨 Possible congestion or slowdown detected in one or more zones!")
+
+
