@@ -1,158 +1,250 @@
-import os
-import time
-from datetime import timedelta
 import streamlit as st
 import pandas as pd
+import psycopg2
 import plotly.express as px
-from sqlalchemy import create_engine, text
+from datetime import datetime, timedelta
 
-st.set_page_config(page_title="Real-Time Traffic Analytics", layout="wide")
+# ==============================
+# DATABASE CONNECTION
+# ==============================
+def get_connection():
+    return psycopg2.connect(
+        dbname="traffic_db",
+        user="postgres",
+        password="postgres",   # 🔁 adapte selon ton mot de passe
+        host="localhost",
+        port="5432"
+    )
 
-# DB connection via SQLAlchemy (convenient)
-DB_HOST = os.environ.get("DB_HOST", "localhost")
-DB_PORT = os.environ.get("DB_PORT", "5432")
-DB_NAME = os.environ.get("DB_NAME", "Workshop01")
-DB_USER = os.environ.get("DB_USER", "postgres")
-DB_PASS = os.environ.get("DB_PASS", "theworldwidechampion")
-
-engine = create_engine(f"postgresql+psycopg2://{DB_USER}:{DB_PASS}@{DB_HOST}:{DB_PORT}/{DB_NAME}", pool_pre_ping=True)
-
-# Sidebar
-st.sidebar.title("Controls")
-hours = st.sidebar.slider("Time window (hours)", 1, 24, 3)
-with engine.connect() as conn:
-    sensors_df = pd.read_sql("SELECT sensor_id, location_name FROM sensors ORDER BY sensor_id;", conn)
-sensor_options = st.sidebar.multiselect("Sensors (empty = all)", options=sensors_df['sensor_id'].tolist(),
-                                        format_func=lambda x: sensors_df.loc[sensors_df.sensor_id==x, 'location_name'].values[0])
-refresh_sec = st.sidebar.number_input("Auto-refresh interval (seconds, 0 = off)", min_value=0, max_value=3600, value=0, step=5)
-manual_refresh = st.sidebar.button("Refresh Now")
-
-# auto-refresh
-if 'last_run' not in st.session_state:
-    st.session_state['last_run'] = 0
-if refresh_sec > 0:
-    if time.time() - st.session_state['last_run'] > refresh_sec:
-        st.session_state['last_run'] = time.time()
-        st.experimental_rerun()
-if manual_refresh:
-    st.session_state['last_run'] = time.time()
-    st.experimental_rerun()
-
-# helper to run SQL
 def run_sql(query, params=None):
-    with engine.connect() as conn:
-        return pd.read_sql(text(query), conn, params=params)
+    conn = get_connection()
+    df = pd.read_sql_query(query, conn, params=params)
+    conn.close()
+    return df
 
-# Flow intensity
-sensor_filter = ""
-params = {"hours": f"{hours} hours"}
-if sensor_options:
-    sensor_filter = "AND r.sensor_id = any(:sensors)"
-    params["sensors"] = sensor_options
+# ==============================
+# STREAMLIT DASHBOARD
+# ==============================
+st.set_page_config(page_title="Traffic Analysis Dashboard", layout="wide")
+st.title("🚦 Traffic Monitoring Dashboard")
+st.caption("Données issues du fichier SQL : 2SD04_WS01.sql")
 
-sql_flow = f"""
-SELECT date_trunc('minute', record_time) AS minute,
-       COUNT(*) AS vehicle_count
-FROM raw_traffic_readings r
-WHERE record_time >= NOW() - INTERVAL :hours
-{sensor_filter}
-GROUP BY 1
-ORDER BY 1;
+# Choix de la période d’analyse
+hours = st.slider("Durée d'analyse (heures)", 1, 24, 6)
+
+# ==============================
+# 1️⃣ Traffic Peaks & Flow Intensity
+# ==============================
+st.header("1️⃣ Traffic Peaks and Flow Intensity")
+
+query1 = """
+SELECT 
+    sensor_id,
+    date_trunc('hour', record_time) AS hour_slot,
+    COUNT(vehiicule_id) AS vehicle_count,
+    AVG(speed) AS avg_speed
+FROM raw_traffic_readings
+WHERE record_time >= NOW() - INTERVAL %s
+GROUP BY sensor_id, date_trunc('hour', record_time)
+ORDER BY sensor_id, hour_slot;
 """
-flow_df = run_sql(sql_flow, params=params)
+df1 = run_sql(query1, (f"{hours} hours",))
+fig1 = px.line(df1, x="hour_slot", y="vehicle_count", color="sensor_id",
+               title="Vehicle Count per Hour by Sensor")
+st.plotly_chart(fig1, use_container_width=True)
 
-st.title("Real-Time Traffic Analytics Dashboard")
-st.markdown(f"**Window:** last {hours} hours")
+# ==============================
+# 2️⃣ Movement Efficiency & Slowdowns
+# ==============================
+st.header("2️⃣ Movement Efficiency & Possible Slowdowns")
 
-if not flow_df.empty:
-    fig_flow = px.line(flow_df, x='minute', y='vehicle_count', title="Vehicles per minute (flow intensity)")
-    st.plotly_chart(fig_flow, use_container_width=True)
-else:
-    st.info("No flow data in the selected window/sensors.")
-
-# Percent slow per sensor
-sql_pct_slow = """
-WITH thresholds AS (
-  SELECT sensor_id,
-         CASE road_type
-           WHEN 'Highway' THEN 60
-           WHEN 'Urban' THEN 30
-           WHEN 'Suburban' THEN 40
-         END AS slow_threshold
-  FROM sensors
-)
-SELECT s.sensor_id, s.location_name, s.road_type,
-       COUNT(r.reading_id) AS total_reads,
-       SUM(CASE WHEN r.speed < t.slow_threshold THEN 1 ELSE 0 END) AS slow_count,
-       ROUND(100.0 * SUM(CASE WHEN r.speed < t.slow_threshold THEN 1 ELSE 0 END) / NULLIF(COUNT(r.reading_id),0),2) AS pct_slow
-FROM sensors s
-LEFT JOIN thresholds t ON t.sensor_id = s.sensor_id
-LEFT JOIN raw_traffic_readings r ON r.sensor_id = s.sensor_id AND r.record_time >= NOW() - INTERVAL :hours
-GROUP BY s.sensor_id, s.location_name, s.road_type, t.slow_threshold
-ORDER BY pct_slow DESC;
-"""
-pct_slow_df = run_sql(sql_pct_slow, params={"hours": f"{hours} hours"})
-if not pct_slow_df.empty:
-    fig_bar = px.bar(pct_slow_df, x='location_name', y='pct_slow', hover_data=['road_type','total_reads','slow_count'], title="% slow readings per sensor")
-    st.plotly_chart(fig_bar, use_container_width=True)
-else:
-    st.info("No slow-speed data for the selected window.")
-
-# moving average speed per sensor (5-minute window)
-sql_mavg = """
-SELECT sensor_id, minute, moving_avg_speed
-FROM (
-  SELECT sensor_id, minute,
-         ROUND(AVG(speed) OVER (PARTITION BY sensor_id ORDER BY minute ROWS BETWEEN 4 PRECEDING AND CURRENT ROW),2) AS moving_avg_speed
-  FROM (
-    SELECT sensor_id, date_trunc('minute', record_time) AS minute, AVG(speed) AS speed
+query2 = """
+WITH speed_stats AS (
+    SELECT 
+        sensor_id,
+        date_trunc('minute', record_time) AS time_slot,
+        AVG(speed) AS avg_speed
     FROM raw_traffic_readings
-    WHERE record_time >= NOW() - INTERVAL :hours
+    WHERE record_time >= NOW() - INTERVAL %s
     GROUP BY sensor_id, date_trunc('minute', record_time)
-  ) AS per_minute
-) t
-ORDER BY sensor_id, minute;
-"""
-mavg_df = run_sql(sql_mavg, params={"hours": f"{hours} hours"})
-st.subheader("Moving average speed (5-minute window)")
-if not mavg_df.empty:
-    sel_sensor = st.selectbox("Select sensor to view", options=sorted(mavg_df['sensor_id'].unique()),
-                              format_func=lambda x: sensors_df.loc[sensors_df.sensor_id==x, 'location_name'].values[0])
-    sel_df = mavg_df[mavg_df['sensor_id'] == sel_sensor]
-    fig_mavg = px.line(sel_df, x='minute', y='moving_avg_speed', title=f"Sensor {sel_sensor} — 5-min moving avg speed")
-    st.plotly_chart(fig_mavg, use_container_width=True)
-else:
-    st.info("No moving-average speed data.")
-
-# anomalies (z-score)
-sql_anom = """
-WITH per_min AS (
-  SELECT sensor_id, date_trunc('minute', record_time) AS minute, COUNT(*) AS cnt
-  FROM raw_traffic_readings
-  WHERE record_time >= NOW() - INTERVAL :hours2
-  GROUP BY sensor_id, date_trunc('minute', record_time)
 ),
-stats AS (
-  SELECT sensor_id, AVG(cnt) AS mean_cnt, STDDEV_POP(cnt) AS sd_cnt
-  FROM per_min
-  GROUP BY sensor_id
+sensor_baseline AS (
+    SELECT 
+        sensor_id,
+        AVG(avg_speed) AS normal_speed,
+        STDDEV(avg_speed) AS speed_std
+    FROM speed_stats
+    GROUP BY sensor_id
 )
-SELECT p.sensor_id, s.location_name, p.minute, p.cnt,
-       ROUND((p.cnt - st.mean_cnt) / NULLIF(st.sd_cnt,0),2) AS zscore
-FROM per_min p
-JOIN stats st ON st.sensor_id = p.sensor_id
-JOIN sensors s ON s.sensor_id = p.sensor_id
-WHERE st.sd_cnt IS NOT NULL AND ABS((p.cnt - st.mean_cnt) / st.sd_cnt) >= 2
-ORDER BY ABS((p.cnt - st.mean_cnt) / st.sd_cnt) DESC
-LIMIT 200;
+SELECT 
+    s.sensor_id,
+    ROUND(s.avg_speed, 2) AS avg_speed,
+    ROUND(b.normal_speed, 2) AS normal_speed,
+    CASE 
+        WHEN s.avg_speed < b.normal_speed - 1.5 * b.speed_std THEN 'Slowdown'
+        WHEN s.avg_speed > b.normal_speed + 1.5 * b.speed_std THEN 'Free Flow'
+        ELSE 'Normal'
+    END AS status
+FROM speed_stats s
+JOIN sensor_baseline b USING(sensor_id)
+ORDER BY s.sensor_id, s.time_slot;
 """
-anom_df = run_sql(sql_anom, params={"hours2": f"{hours*2} hours"})
-st.subheader("Anomalous minutes (zscore >= 2)")
-if not anom_df.empty:
-    st.table(anom_df)
-else:
-    st.info("No anomalies detected in the selected period.")
+df2 = run_sql(query2, (f"{hours} hours",))
+fig2 = px.histogram(df2, x="status", color="status", title="Traffic Status Distribution")
+st.plotly_chart(fig2, use_container_width=True)
 
-st.markdown("---")
-st.markdown("**Tips:** peak flow + low avg speed = congestion. High pct_slow for single sensor = local incident.")
-#xxx
+# ==============================
+# 3️⃣ Dynamic Traffic Evaluation
+# ==============================
+st.header("3️⃣ Dynamic Traffic Conditions by Road Type")
+
+query3 = """
+WITH traffic_summary AS (
+    SELECT 
+        se.sensor_id,
+        se.location_name,
+        se.road_type,
+        date_trunc('minute', r.record_time) AS time_slot,
+        AVG(r.speed) AS avg_speed
+    FROM raw_traffic_readings r
+    JOIN sensors se ON r.sensor_id = se.sensor_id
+    WHERE record_time >= NOW() - INTERVAL %s
+    GROUP BY se.sensor_id, se.location_name, se.road_type, date_trunc('minute', r.record_time)
+)
+SELECT
+    sensor_id,
+    location_name,
+    road_type,
+    time_slot,
+    ROUND(avg_speed, 2) AS avg_speed,
+    CASE 
+        WHEN road_type = 'Highway' AND avg_speed >= 80 THEN 'Free Flow'
+        WHEN road_type = 'Highway' AND avg_speed >= 50 THEN 'Moderate'
+        WHEN road_type = 'Highway' THEN 'Congested'
+        WHEN road_type = 'Urban' AND avg_speed >= 40 THEN 'Free Flow'
+        WHEN road_type = 'Urban' AND avg_speed >= 25 THEN 'Moderate'
+        WHEN road_type = 'Urban' THEN 'Congested'
+        WHEN road_type = 'Suburban' AND avg_speed >= 60 THEN 'Free Flow'
+        WHEN road_type = 'Suburban' AND avg_speed >= 35 THEN 'Moderate'
+        ELSE 'Congested'
+    END AS traffic_condition
+FROM traffic_summary;
+"""
+df3 = run_sql(query3, (f"{hours} hours",))
+fig3 = px.bar(df3, x="location_name", color="traffic_condition", title="Traffic Conditions by Sensor")
+st.plotly_chart(fig3, use_container_width=True)
+
+# ==============================
+# 4️⃣ Density Impact on Flow
+# ==============================
+st.header("4️⃣ Density Impact on Flow")
+
+query4 = """
+WITH flow_density AS (
+    SELECT 
+        s.sensor_id,
+        se.location_name,
+        se.road_type,
+        date_trunc('hour', r.record_time) AS hour_slot,
+        COUNT(r.vehiicule_id) AS vehicle_count,
+        AVG(r.speed) AS avg_speed
+    FROM raw_traffic_readings r
+    JOIN sensors se ON r.sensor_id = se.sensor_id
+    WHERE record_time >= NOW() - INTERVAL %s
+    GROUP BY s.sensor_id, se.location_name, se.road_type, date_trunc('hour', r.record_time)
+)
+SELECT 
+    sensor_id,
+    location_name,
+    road_type,
+    hour_slot,
+    vehicle_count,
+    ROUND(avg_speed, 2) AS avg_speed
+FROM flow_density
+ORDER BY sensor_id, hour_slot;
+"""
+df4 = run_sql(query4, (f"{hours} hours",))
+fig4 = px.scatter(df4, x="vehicle_count", y="avg_speed", color="road_type",
+                  title="Vehicle Density vs Average Speed")
+st.plotly_chart(fig4, use_container_width=True)
+
+# ==============================
+# 5️⃣ Daily Evolution
+# ==============================
+st.header("5️⃣ Traffic Evolution Throughout the Day")
+
+query5 = """
+SELECT 
+    date_trunc('hour', record_time) AS hour_slot,
+    AVG(speed) AS avg_speed
+FROM raw_traffic_readings
+WHERE record_time >= NOW() - INTERVAL %s
+GROUP BY date_trunc('hour', record_time)
+ORDER BY hour_slot;
+"""
+df5 = run_sql(query5, (f"{hours} hours",))
+fig5 = px.line(df5, x="hour_slot", y="avg_speed", title="Average Speed Evolution")
+st.plotly_chart(fig5, use_container_width=True)
+
+# ==============================
+# 6️⃣ Irregular Patterns / Incidents
+# ==============================
+st.header("6️⃣ Incident Detection (Speed Anomalies)")
+
+query6 = """
+WITH speed_stats AS (
+    SELECT 
+        sensor_id,
+        date_trunc('minute', record_time) AS time_slot,
+        AVG(speed) AS avg_speed
+    FROM raw_traffic_readings
+    WHERE record_time >= NOW() - INTERVAL %s
+    GROUP BY sensor_id, date_trunc('minute', record_time)
+),
+sensor_baseline AS (
+    SELECT 
+        sensor_id,
+        AVG(avg_speed) AS normal_speed,
+        STDDEV(avg_speed) AS speed_std
+    FROM speed_stats
+    GROUP BY sensor_id
+)
+SELECT 
+    s.sensor_id,
+    ROUND(s.avg_speed, 2) AS avg_speed,
+    ROUND(b.normal_speed, 2) AS normal_speed,
+    CASE 
+        WHEN s.avg_speed < b.normal_speed - 2 * b.speed_std THEN 'Possible Incident - Sudden slowdown'
+        WHEN s.avg_speed > b.normal_speed + 2 * b.speed_std THEN 'Unusual acceleration'
+        ELSE 'Normal'
+    END AS anomaly_flag
+FROM speed_stats s
+JOIN sensor_baseline b USING(sensor_id)
+ORDER BY s.sensor_id, s.time_slot;
+"""
+df6 = run_sql(query6, (f"{hours} hours",))
+fig6 = px.histogram(df6, x="anomaly_flag", color="anomaly_flag", title="Detected Anomalies")
+st.plotly_chart(fig6, use_container_width=True)
+
+# ==============================
+# 7️⃣ Compare Road Types by Time of Day
+# ==============================
+st.header("7️⃣ Compare Average Speed Across Road Types")
+
+query7 = """
+SELECT 
+    road_type,
+    date_trunc('hour', record_time) AS hour_slot,
+    ROUND(AVG(speed), 2) AS avg_speed
+FROM raw_traffic_readings r
+JOIN sensors s ON r.sensor_id = s.sensor_id
+WHERE record_time >= NOW() - INTERVAL %s
+GROUP BY road_type, date_trunc('hour', record_time)
+ORDER BY road_type, hour_slot;
+"""
+df7 = run_sql(query7, (f"{hours} hours",))
+fig7 = px.line(df7, x="hour_slot", y="avg_speed", color="road_type",
+               title="Average Speed per Road Type")
+st.plotly_chart(fig7, use_container_width=True)
+
+st.success("✅ Dashboard loaded successfully with data from 2SD04_WS01.sql")
