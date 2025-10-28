@@ -9,7 +9,7 @@ import plotly.express as px
 @st.cache_data(ttl=60)
 def run_sql(query, params=None):
     conn = psycopg2.connect(
-        dbname="TEST",
+        dbname="2SD04_WS01",
         user="postgres",
         password="732019",
         host="localhost",
