@@ -4,7 +4,7 @@ import psycopg2
 import plotly.express as px
 
 # ==============================
-# DATABASE CONNECTION (Neon)
+# DATABASE CONNECTION 
 # ==============================
 @st.cache_data(ttl=60)
 def run_sql(query, params=None):
