@@ -4,7 +4,7 @@ import psycopg2
 import plotly.express as px
 
 # ==============================
-# DATABASE CONNECTION
+# DATABASE CONNECTION (Neon)
 # ==============================
 @st.cache_data(ttl=60)
 def run_sql(query, params=None):
@@ -14,11 +14,12 @@ def run_sql(query, params=None):
         password="npg_VCtug9iSxDr5",
         host="ep-polished-meadow-adynfmd5-pooler.c-2.us-east-1.aws.neon.tech",
         port="5432",
-        sslmode="require",
+        sslmode="require"
     )
     df = pd.read_sql_query(query, conn, params=params)
     conn.close()
     return df
+
 
 # ==============================
 # STREAMLIT CONFIG
@@ -229,69 +230,6 @@ fig5 = px.line(df5, x="hour_slot", y="avg_speed", color="traffic_trend",
 st.plotly_chart(fig5, use_container_width=True)
 
 # ======================================================
-# 6️⃣ Incident Detection
+# ✅ Success
 # ======================================================
-st.header("6️⃣ Incident Detection (Speed Anomalies)")
-
-query6 = """
-WITH speed_stats AS (
-    SELECT 
-        sensor_id,
-        date_trunc('minute', record_time) AS time_slot,
-        AVG(speed) AS avg_speed
-    FROM raw_traffic_readings
-    WHERE record_time >= NOW() - INTERVAL %s
-    GROUP BY sensor_id, date_trunc('minute', record_time)
-),
-sensor_baseline AS (
-    SELECT 
-        sensor_id,
-        AVG(avg_speed) AS normal_speed,
-        STDDEV(avg_speed) AS speed_std
-    FROM speed_stats
-    GROUP BY sensor_id
-)
-SELECT 
-    s.sensor_id,
-    se.location_name,
-    s.time_slot,
-    ROUND(s.avg_speed, 2) AS avg_speed,
-    ROUND(b.normal_speed, 2) AS normal_speed,
-    CASE 
-        WHEN s.avg_speed < b.normal_speed - 2 * b.speed_std THEN 'Possible Incident - Sudden slowdown'
-        WHEN s.avg_speed > b.normal_speed + 2 * b.speed_std THEN 'Unusual acceleration'
-        ELSE 'Normal'
-    END AS anomaly_flag
-FROM speed_stats s
-JOIN sensor_baseline b USING(sensor_id)
-JOIN sensors se USING(sensor_id)
-ORDER BY s.sensor_id, s.time_slot;
-"""
-df6 = run_sql(query6, (f"{hours} hours",))
-fig6 = px.histogram(df6, x="anomaly_flag", color="anomaly_flag",
-                    title="Detected Traffic Anomalies")
-st.plotly_chart(fig6, use_container_width=True)
-
-# ======================================================
-# 7️⃣ Comparison by Road Type
-# ======================================================
-st.header("7️⃣ Compare Average Speed Across Road Types")
-
-query7 = """
-SELECT 
-    road_type,
-    date_trunc('hour', record_time) AS hour_slot,
-    ROUND(AVG(speed), 2) AS avg_speed,
-    COUNT(vehiicule_id) AS vehicle_count
-FROM raw_traffic_readings r
-JOIN sensors s ON r.sensor_id = s.sensor_id
-WHERE record_time >= NOW() - INTERVAL %s
-GROUP BY road_type, date_trunc('hour', record_time)
-ORDER BY road_type, hour_slot;
-"""
-df7 = run_sql(query7, (f"{hours} hours",))
-fig7 = px.line(df7, x="hour_slot", y="avg_speed", color="road_type",
-               title="Average Speed per Road Type")
-st.plotly_chart(fig7, use_container_width=True)
-
-st.success("✅ Dashboard connected successfully to Neon Database")
+st.success("✅ Dashboard connected successfully to Neon Database!")
