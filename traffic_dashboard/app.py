@@ -9,23 +9,24 @@ import plotly.express as px
 @st.cache_data(ttl=60)
 def run_sql(query, params=None):
     conn = psycopg2.connect(
-        dbname="2SD04_WS01",
-        user="postgres",
-        password="732019",
-        host="localhost",
-        port="5432"
+        dbname="Traffic_Dash",
+        user="neondb_owner",
+        password="npg_VCtug9iSxDr5",
+        host="ep-polished-meadow-adynfmd5-pooler.c-2.us-east-1.aws.neon.tech",
+        port="5432",
+        sslmode="require",
+        options='-c channel_binding=require'
     )
     df = pd.read_sql_query(query, conn, params=params)
     conn.close()
     return df
-
 
 # ==============================
 # STREAMLIT CONFIG
 # ==============================
 st.set_page_config(page_title="🚦 Real-Time Traffic Dashboard", layout="wide")
 st.title("🚦 Real-Time Traffic Analytics Dashboard")
-st.caption("Data extracted from 2SD04_WS01.sql")
+st.caption("Data extracted from 2SD04_WS01.sql (Neon Database)")
 
 # Choix de la période d’analyse
 hours = st.slider("Durée d'analyse (heures)", 1, 24, 6)
@@ -60,7 +61,6 @@ df1 = run_sql(query1, (f"{hours} hours",))
 fig1 = px.bar(df1, x="hour_slot", y="vehicle_count", color="traffic_status",
               barmode="group", title="Traffic Peaks and Flow Intensity")
 st.plotly_chart(fig1, use_container_width=True)
-
 
 # ======================================================
 # 2️⃣ Movement Efficiency & Slowdowns
@@ -105,7 +105,6 @@ df2 = run_sql(query2, (f"{hours} hours",))
 fig2 = px.histogram(df2, x="traffic_status", color="traffic_status",
                     title="Traffic Efficiency Status Distribution")
 st.plotly_chart(fig2, use_container_width=True)
-
 
 # ======================================================
 # 3️⃣ Dynamic Traffic Evaluation
@@ -152,7 +151,6 @@ fig3 = px.bar(df3, x="location_name", y="avg_speed", color="traffic_condition",
               title="Traffic Conditions by Road Type")
 st.plotly_chart(fig3, use_container_width=True)
 
-
 # ======================================================
 # 4️⃣ Density Impact on Flow
 # ======================================================
@@ -193,7 +191,6 @@ fig4 = px.scatter(df4, x="vehicle_count", y="avg_speed", color="density_impact",
                   title="Density Impact on Traffic Flow")
 st.plotly_chart(fig4, use_container_width=True)
 
-
 # ======================================================
 # 5️⃣ Daily Evolution
 # ======================================================
@@ -231,7 +228,6 @@ df5 = run_sql(query5, (f"{hours} hours",))
 fig5 = px.line(df5, x="hour_slot", y="avg_speed", color="traffic_trend",
                title="Traffic Evolution Throughout the Day")
 st.plotly_chart(fig5, use_container_width=True)
-
 
 # ======================================================
 # 6️⃣ Incident Detection
@@ -277,7 +273,6 @@ fig6 = px.histogram(df6, x="anomaly_flag", color="anomaly_flag",
                     title="Detected Traffic Anomalies")
 st.plotly_chart(fig6, use_container_width=True)
 
-
 # ======================================================
 # 7️⃣ Comparison by Road Type
 # ======================================================
@@ -300,4 +295,4 @@ fig7 = px.line(df7, x="hour_slot", y="avg_speed", color="road_type",
                title="Average Speed per Road Type")
 st.plotly_chart(fig7, use_container_width=True)
 
-st.success("✅ Dashboard loaded successfully with live data from 2SD04_WS01.sql")
+st.success("✅ Dashboard connected successfully to Neon Database")
